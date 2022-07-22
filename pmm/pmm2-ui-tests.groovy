@@ -28,7 +28,7 @@ def changeUserPasswordUtility(dockerImage) {
 
 pipeline {
     agent {
-        label 'docker'
+        label 'agent-amd64'
     }
     environment {
         AZURE_CLIENT_ID=credentials('AZURE_CLIENT_ID');
@@ -110,6 +110,12 @@ pipeline {
         PORTAL_BASE_URL=credentials('PORTAL_BASE_URL')
         PAGER_DUTY_SERVICE_KEY=credentials('PAGER_DUTY_SERVICE_KEY')
         PAGER_DUTY_API_KEY=credentials('PAGER_DUTY_API_KEY')
+        PMM_QA_AURORA2_MYSQL_HOST=credentials('PMM_QA_AURORA2_MYSQL_HOST')
+        PMM_QA_AURORA2_MYSQL_PASSWORD=credentials('PMM_QA_AURORA2_MYSQL_PASSWORD')
+        PMM_QA_AURORA3_MYSQL_HOST=credentials('PMM_QA_AURORA3_MYSQL_HOST')
+        PMM_QA_AURORA3_MYSQL_PASSWORD=credentials('PMM_QA_AURORA3_MYSQL_PASSWORD')
+        PMM_QA_AWS_ACCESS_KEY_ID=credentials('PMM_QA_AWS_ACCESS_KEY_ID')
+        PMM_QA_AWS_ACCESS_KEY=credentials('PMM_QA_AWS_ACCESS_KEY')
     }
     parameters {
         string(
@@ -161,7 +167,7 @@ pipeline {
             description: 'Percona Server Docker Container Image',
             name: 'MYSQL_IMAGE')
         string(
-            defaultValue: 'perconalab/percona-distribution-postgresql:14.2',
+            defaultValue: 'perconalab/percona-distribution-postgresql:14.4',
             description: 'Postgresql Docker Container Image',
             name: 'POSTGRES_IMAGE')
         string(
@@ -195,9 +201,6 @@ pipeline {
     options {
         skipDefaultCheckout()
     }
-    triggers {
-        upstream upstreamProjects: 'pmm2-server-autobuild', threshold: hudson.model.Result.SUCCESS
-    }
     stages {
         stage('Prepare') {
             steps {
@@ -209,25 +212,18 @@ pipeline {
                 }
                 // clean up workspace and fetch pmm-ui-tests repository
                 deleteDir()
-                git poll: false, branch: GIT_BRANCH, url: 'https://github.com/percona/pmm-ui-tests.git'
+                git poll: false,
+                    branch: GIT_BRANCH,
+                    url: 'https://github.com/percona/pmm-ui-tests.git'
 
-                installDocker()
-                setupDockerCompose()
                 sh '''
-                    docker-compose --version
-                    sudo yum -y update --security
-                    sudo yum -y install php php-mysqlnd php-pdo jq svn bats mysql
-                    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-                    sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-                    sudo amazon-linux-extras install epel -y
                     sudo mkdir -p /srv/pmm-qa || :
                     pushd /srv/pmm-qa
                         sudo git clone --single-branch --branch \${PMM_QA_GIT_BRANCH} https://github.com/percona/pmm-qa.git .
                         sudo git checkout \${PMM_QA_GIT_COMMIT_HASH}
-                        sudo chmod 755 pmm-tests/install-google-chrome.sh
-                        bash ./pmm-tests/install-google-chrome.sh
                     popd
-                    sudo ln -s /usr/bin/google-chrome-stable /usr/bin/chromium
+                    /srv/pmm-qa/pmm-tests/install_k8s_tools.sh --kubectl --sudo
+                    sudo ln -s /usr/bin/chromium-browser /usr/bin/chromium
                 '''
             }
         }
@@ -246,7 +242,6 @@ pipeline {
                         expression { env.CLIENT_INSTANCE == "no" }
                     }
                     steps {
-                        installAWSv2()
                         withCredentials([aws(accessKeyVariable: 'AWS_ACCESS_KEY_ID', credentialsId: 'AMI/OVF', secretKeyVariable: 'AWS_SECRET_ACCESS_KEY')]) {
                             sh """
                                 aws ecr-public get-login-password --region us-east-1 | docker login -u AWS --password-stdin public.ecr.aws/e7j3v3n0
@@ -314,9 +309,8 @@ pipeline {
                 }
                 stage('Setup Node') {
                     steps {
-                        setupNodejs()
                         sh """
-                            sudo yum install -y gettext
+                            npm ci
                             envsubst < env.list > env.generated.list
                         """
                     }
@@ -362,7 +356,7 @@ pipeline {
                            export PATH="`pwd`/pmm2-client/bin:$PATH"
                         fi
                         export CHROMIUM_PATH=/usr/bin/chromium
-                        ./node_modules/.bin/codeceptjs run-multiple parallel --debug --steps --reporter mocha-multi -c pr.codecept.js --grep '(?=.*)^(?!.*@not-ui-pipeline)^(?!.*@dbaas)^(?!.*@ami-upgrade)^(?!.*@pmm-upgrade)^(?!.*@qan)^(?!.*@nightly)^(?!.*@settings)^(?!.*@menu)^(?!.*@pmm-portal-upgrade)'
+                        ./node_modules/.bin/codeceptjs run-multiple parallel --steps --reporter mocha-multi -c pr.codecept.js --grep '(?=.*)^(?!.*@not-ui-pipeline)^(?!.*@dbaas)^(?!.*@ami-upgrade)^(?!.*@pmm-upgrade)^(?!.*@qan)^(?!.*@nightly)^(?!.*@settings)^(?!.*@menu)^(?!.*@pmm-portal-upgrade)'
                     """
                 }
             }
@@ -387,7 +381,7 @@ pipeline {
                            export PATH="`pwd`/pmm2-client/bin:$PATH"
                         fi
                         export CHROMIUM_PATH=/usr/bin/chromium
-                        ./node_modules/.bin/codeceptjs run-multiple parallel --debug --steps --reporter mocha-multi -c pr.codecept.js --grep ${CODECEPT_TAG}
+                        ./node_modules/.bin/codeceptjs run-multiple parallel --steps --reporter mocha-multi -c pr.codecept.js --grep ${CODECEPT_TAG}
                     """
                 }
             }
@@ -398,9 +392,6 @@ pipeline {
             // stop staging
             sh '''
                 curl --insecure ${PMM_URL}/logs.zip --output logs.zip || true
-                ./node_modules/.bin/mochawesome-merge tests/output/parallel_chunk*/*.json > tests/output/combine_results.json || true
-                ./node_modules/.bin/mochawesome-merge tests/output/*.json > tests/output/combine_results.json || true
-                ./node_modules/.bin/marge tests/output/combine_results.json --reportDir tests/output/ --inline --cdn --charts || true
                 echo --- Jobs from pmm-server --- >> job_logs.txt
                 docker exec pmm-server psql -Upmm-managed -c 'select id,error,data,created_at,updated_at from jobs ORDER BY updated_at DESC LIMIT 1000;' >> job_logs.txt || true
                 echo --- Job logs from pmm-server --- >> job_logs.txt
@@ -425,25 +416,17 @@ pipeline {
                 }
             }
             script {
-                if (env.OVF_TEST == "no") {
-                    env.PATH_TO_REPORT_RESULTS = 'tests/output/parallel_chunk*/*.xml'
-                } else {
+                env.PATH_TO_REPORT_RESULTS = 'tests/output/parallel_chunk*/*.xml'
+                if (env.OVF_TEST == "yes") {
                     env.PATH_TO_REPORT_RESULTS = 'tests/output/*.xml'
                 }
                 archiveArtifacts artifacts: 'pmm-managed-full.log'
                 archiveArtifacts artifacts: 'pmm-agent-full.log'
                 archiveArtifacts artifacts: 'logs.zip'
                 archiveArtifacts artifacts: 'job_logs.txt'
-                if (currentBuild.result == null || currentBuild.result == 'SUCCESS') {
-                    junit env.PATH_TO_REPORT_RESULTS
-                    publishHTML([allowMissing: false, alwaysLinkToLastBuild: false, keepAll: false, reportDir: 'tests/output/', reportFiles: 'combine_results.html', reportName: 'HTML Report', reportTitles: ''])
-                } else {
-                    junit env.PATH_TO_REPORT_RESULTS
-                    publishHTML([allowMissing: false, alwaysLinkToLastBuild: false, keepAll: false, reportDir: 'tests/output/', reportFiles: 'combine_results.html', reportName: 'HTML Report', reportTitles: ''])
+                junit env.PATH_TO_REPORT_RESULTS
+                if (currentBuild.result != null && currentBuild.result != 'SUCCESS') {
                     slackSend botUser: true, channel: '#pmm-ci', color: '#FF0000', message: "[${JOB_NAME}]: build ${currentBuild.result} - ${BUILD_URL}"
-                    archiveArtifacts artifacts: 'tests/output/combine_results.html'
-                    archiveArtifacts artifacts: 'tests/output/parallel_chunk*/*.png'
-                    archiveArtifacts artifacts: 'tests/output/*.png'
                 }
             }
             allure([

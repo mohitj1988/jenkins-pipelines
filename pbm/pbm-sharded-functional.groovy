@@ -15,7 +15,7 @@ pipeline {
         SCENARIO = 'aws'
     }
     parameters {
-        string(name: 'BRANCH',description: 'PBM repo branch',defaultValue: 'pbm_2.0')
+        string(name: 'BRANCH',description: 'PBM repo branch',defaultValue: 'main')
         choice(name: 'PSMDB',description: 'PSMDB for testing',choices: ['psmdb-44','psmdb-42','psmdb-50'])
         choice(name: 'INSTANCE_TYPE',description: 'Ec2 instance type',choices: ['i3.large','i3en.large','t2.micro','i3.xlarge','i3en.xlarge'])
         choice(name: 'BACKUP_TYPE',description: 'Backup type',choices: ['physical','logical'])        
@@ -25,6 +25,7 @@ pipeline {
         string(name: 'TESTING_BRANCH',description: 'Branch for testing repository',defaultValue: 'main')
         string(name: 'SSH_USER',description: 'User for debugging',defaultValue: 'none')
         string(name: 'SSH_PUBKEY',description: 'User ssh public key for debugging',defaultValue: 'none')
+        password(name: 'PMM_HOST', description: 'PMM host with credentials, format https://user:password@x.x.x.x',defaultValue: 'none')
     }
     options {
         withCredentials(moleculePbmJenkinsCreds())
@@ -54,7 +55,7 @@ pipeline {
         stage ('Install build tools') {
             steps {
                 sh """
-                    curl "https://raw.githubusercontent.com/percona/percona-backup-mongodb/main/packaging/scripts/mongodb-backup_builder.sh" -o "mongodb-backup_builder.sh"
+                    curl "https://raw.githubusercontent.com/percona/percona-backup-mongodb/${params.BRANCH}/packaging/scripts/mongodb-backup_builder.sh" -o "mongodb-backup_builder.sh"
                     chmod +x mongodb-backup_builder.sh
                     mkdir -p /tmp/builddir
                     sudo ./mongodb-backup_builder.sh --builddir=/tmp/builddir --install_deps=1
