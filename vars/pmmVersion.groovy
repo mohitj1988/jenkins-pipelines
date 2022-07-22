@@ -19,6 +19,7 @@ def call(type='latest') {
     '2.29.0': 'ami-0e68224439dd6f200'
   ]
   List<String> versionsList = new ArrayList<>(versions.keySet());
+  List<String> ovfVersions = versionsList.reverse().subList(0,5);
   switch(type) {
     case 'latest':
       def latestVersion = httpRequest "https://raw.githubusercontent.com/Percona-Lab/pmm-submodules/PMM-2.0/VERSION"
@@ -30,7 +31,7 @@ def call(type='latest') {
     case 'list':
       return versionsList
     case 'ovf':
-      return versionsList.reverse().subList(0, 5)
+      return ovfVersions
     case 'list_with_old':
       return oldVersions + versionsList
   }
